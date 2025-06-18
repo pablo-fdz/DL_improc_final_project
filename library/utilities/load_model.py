@@ -1,5 +1,5 @@
 import torch
-from hw1_library.nn_model.architecture.unet import UNet  # Importing the UNet architecture
+from library.nn_model.architecture.unet import UNet  # Importing the UNet architecture
 
 def load_model(filepath, device=None):
 
