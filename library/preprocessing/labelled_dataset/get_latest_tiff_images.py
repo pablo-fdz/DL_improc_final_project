@@ -3,8 +3,8 @@ import os
 
 def get_latest_tiff_images(folder_path):
     """Get the latest dated .tiff images from the folder for each Sentinel type"""
-    sentinel1_files = glob.glob(os.path.join(folder_path, "sentinel1_*.tiff"))
-    sentinel2_files = glob.glob(os.path.join(folder_path, "sentinel2_*.tiff"))
+    sentinel1_files = glob(os.path.join(folder_path, "sentinel1_*.tiff"))
+    sentinel2_files = glob(os.path.join(folder_path, "sentinel2_*.tiff"))
     
     print(f"Found {len(sentinel1_files)} Sentinel-1 files and {len(sentinel2_files)} Sentinel-2 files in {folder_path}")
     

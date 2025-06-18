@@ -1,5 +1,5 @@
 import os
-import glob
+from glob import glob
 
 def get_corresponding_files(tiff_file):
     """Get corresponding coverage and mask files"""
@@ -20,9 +20,9 @@ def get_corresponding_files(tiff_file):
         print(f"Found TIFF coverage: {coverage_file}")
     
     # Get mask file - assuming it's the same for all images in the folder
-    mask_files = glob.glob(os.path.join(base_dir, "*_mask.tiff"))
+    mask_files = glob(os.path.join(base_dir, "*_mask.tiff"))
     if not mask_files:
-        mask_files = glob.glob(os.path.join(base_dir, "*_mask.png"))
+        mask_files = glob(os.path.join(base_dir, "*_mask.png"))
     
     mask_file = mask_files[0] if mask_files else None
     if mask_file:
