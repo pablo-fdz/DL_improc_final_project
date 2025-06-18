@@ -7,3 +7,4 @@ requests-oauthlib==2.0.0
 oauthlib==3.2.2
 Pillow==11.2.1
 folium==0.20.0
+rasterio==1.4.3
