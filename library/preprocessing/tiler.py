@@ -9,6 +9,7 @@ import os
 import glob
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 class Tiler():
     """
@@ -82,6 +83,7 @@ class Tiler():
     def _tile_image(self, image_path, output_dir, tile_size=256, file_extension='tiff'):
         """
         Tiles a single image into smaller tiles of specified size and saves them to the output directory.
+        Keeps the original channels and metadata intact.
 
         Args:
             image_path (str): Path to the image file to be tiled.
@@ -181,6 +183,7 @@ class Tiler():
                 
                 # For each fire, loop over the Sentinel-1 and Sentinel-2 images
                 for image_path in latest_images:  
+                    
                     # Get corresponding files associated to the images
                     files = self._get_files(image_path, file_extension=file_extension)
                     
@@ -208,7 +211,7 @@ class Tiler():
                             image_path=files['coverage'],
                             output_dir=coverage_output_dir,
                             tile_size=tile_size,
-                            file_extension=file_extension
+                            file_extension='png'  # Save the coverages as PNG (original coverage images are in PNG normally)
                         )
                     
                     # Tile the mask if available
@@ -238,7 +241,7 @@ class Tiler():
     
     def visualize_reconstruction(self, fire_event_name, tiled_base_dir, tile_size=256, file_extension='tiff'):
         """
-        Reconstructs an image from its saved tiles and visualizes the original vs. reconstructed.
+        Reconstructs the Sentinel-2 image, its coverage, and mask from saved tiles and visualizes them.
 
         Args:
             fire_event_name (str): Name of the fire event to visualize.
@@ -246,95 +249,184 @@ class Tiler():
             tile_size (int): Size of the tiles used for reconstruction (default is 256).
             file_extension (str): File extension of the images to be visualized (default is 'tiff').
         """
-        print(f"\n--- Visualizing reconstruction for: {fire_event_name} ---")
-        
-        # 1. Find the original image to get its dimensions and for comparison
-        original_fire_folder = os.path.join(self.input_dir, fire_event_name)
-        if not os.path.exists(original_fire_folder):
-             # Try finding it in one of the part folders
-            found = False
-            for part in range(1, 6):
-                path = os.path.join(self.input_dir, f"Satellite_burned_area_dataset_part{part}", fire_event_name)
-                if os.path.exists(path):
-                    original_fire_folder = path
-                    found = True
-                    break
-            if not found:
-                print(f"ERROR: Could not find original folder for '{fire_event_name}'")
+
+        if self.data_source == 'labelled':
+
+            print(f"\n--- Visualizing reconstruction for: {fire_event_name} ---")
+
+            # 1. Find original files
+            original_fire_folder = os.path.join(self.input_dir, fire_event_name)
+            if not os.path.exists(original_fire_folder):
+                found = False
+                for part in range(1, 6):
+                    path = os.path.join(self.input_dir, f"Satellite_burned_area_dataset_part{part}", fire_event_name)
+                    if os.path.exists(path):
+                        original_fire_folder = path
+                        found = True
+                        break
+                if not found:
+                    print(f"ERROR: Could not find original folder for '{fire_event_name}'")
+                    return
+
+            latest_images = self._get_latest_images(original_fire_folder, file_extension=file_extension)
+            if not latest_images:
+                print("ERROR: No original images found to compare against.")
                 return
 
-        latest_images = self._get_latest_images(original_fire_folder, file_extension=file_extension)
-        if not latest_images:
-            print("ERROR: No original images found to compare against.")
-            return
-        
-        # Prefer Sentinel-2 for visualization
-        original_image_path = next((p for p in latest_images if 'sentinel2' in p), latest_images[0])
-        print(f"Using original image for comparison: {os.path.basename(original_image_path)}")
+            # Take Sentinel-2 for visualization if available
+            original_image_path = next((p for p in latest_images if 'sentinel2' in p), latest_images[0])
+            print(f"Using original image for comparison: {os.path.basename(original_image_path)}")
 
-        # 2. Load original image and prepare for visualization
-        with rasterio.open(original_image_path) as src:
-            original_data = src.read()
-            vis_image = np.transpose(original_data[:3], (1, 2, 0))
-            if vis_image.max() > 1.0 and vis_image.dtype != np.uint8:
-                vis_image = vis_image / vis_image.max()
+            # Get corresponding coverage and mask files
+            files = self._get_files(original_image_path, file_extension=file_extension)
+            original_coverage_path = files.get('coverage')
+            original_mask_path = files.get('mask')
 
-        bands, img_height, img_width = original_data.shape
-        tile_height, tile_width = tile_size, tile_size
+            # --- Helper function for reconstruction ---
+            def _reconstruct_component(original_path, tiled_subfolder, component_name, tile_ext):
+                if not original_path or not os.path.exists(original_path):
+                    print(f"Info: Original {component_name} file not found, skipping reconstruction.")
+                    return None, None, None
 
-        # 3. Find all corresponding tiles
-        tiled_image_dir = os.path.join(tiled_base_dir, fire_event_name, 'images')
-        original_basename = os.path.splitext(os.path.basename(original_image_path))[0]
-        tile_paths = glob.glob(os.path.join(tiled_image_dir, f"{original_basename}_tile_*.{file_extension}"))
+                with rasterio.open(original_path) as src:
+                    original_data = src.read()
+                    bands, img_height, img_width = original_data.shape
+                    tile_height, tile_width = tile_size, tile_size
 
-        if not tile_paths:
-            print(f"ERROR: No tiles found for {original_basename} in {tiled_image_dir}")
-            return
+                tiled_dir = os.path.join(tiled_base_dir, fire_event_name, tiled_subfolder)
+                original_basename = os.path.splitext(os.path.basename(original_path))[0]
+                
+                reconstructed_image = np.zeros_like(original_data, dtype=np.float32)
+                counts = np.zeros_like(original_data, dtype=np.float32)
+                tile_bboxes = []
 
-        # 4. Reconstruct from saved tiles
-        reconstructed_image = np.zeros_like(original_data, dtype=np.float32)
-        counts = np.zeros_like(original_data, dtype=np.float32)
-        tile_bboxes = []
+                n_tiles_h = math.ceil(img_height / tile_height)
+                n_tiles_w = math.ceil(img_width / tile_width)
+                y_starts = np.linspace(0, img_height - tile_height, n_tiles_h, dtype=int)
+                x_starts = np.linspace(0, img_width - tile_width, n_tiles_w, dtype=int)
 
-        n_tiles_h = math.ceil(img_height / tile_height)
-        n_tiles_w = math.ceil(img_width / tile_width)
-        y_starts = np.linspace(0, img_height - tile_height, n_tiles_h, dtype=int)
-        x_starts = np.linspace(0, img_width - tile_width, n_tiles_w, dtype=int)
+                for i, y in enumerate(y_starts):
+                    for j, x in enumerate(x_starts):
+                        tile_path = os.path.join(tiled_dir, f"{original_basename}_tile_{i}_{j}.{tile_ext}")
+                        if os.path.exists(tile_path):
+                            with rasterio.open(tile_path) as tile_src:
+                                tile = tile_src.read()
+                            
+                            tile_slice = (slice(None), slice(y, y + tile_height), slice(x, x + tile_width))
+                            reconstructed_image[tile_slice] += tile
+                            counts[tile_slice] += 1
+                            # Bboxes are the same for all components, so only calculate once
+                            if component_name == 'image': 
+                                tile_bboxes.append((x, y, tile_width, tile_height))
+                
+                if np.sum(counts) == 0:
+                    print(f"ERROR: No tiles found for {component_name} in {tiled_dir}")
+                    return None, None, None
 
-        for i, y in enumerate(y_starts):
-            for j, x in enumerate(x_starts):
-                tile_path = os.path.join(tiled_image_dir, f"{original_basename}_tile_{i}_{j}.{file_extension}")
-                if os.path.exists(tile_path):
-                    with rasterio.open(tile_path) as tile_src:
-                        tile = tile_src.read()
-                    
-                    tile_slice = (slice(None), slice(y, y + tile_height), slice(x, x + tile_width))
-                    reconstructed_image[tile_slice] += tile
-                    counts[tile_slice] += 1
-                    tile_bboxes.append((x, y, tile_width, tile_height))
+                reconstructed_image = np.divide(reconstructed_image, counts, out=np.zeros_like(reconstructed_image), where=counts!=0)
+                reconstructed_image = reconstructed_image.astype(original_data.dtype)
 
-        # Average the pixels in overlapping regions
-        reconstructed_image = np.divide(reconstructed_image, counts, out=np.zeros_like(reconstructed_image), where=counts!=0)
-        reconstructed_image = reconstructed_image.astype(original_data.dtype)
+                return original_data, reconstructed_image, tile_bboxes
 
-        # Prepare reconstructed image for visualization
-        vis_reconstructed = np.transpose(reconstructed_image[:3], (1, 2, 0))
-        if vis_reconstructed.max() > 1.0 and vis_reconstructed.dtype != np.uint8:
-            vis_reconstructed = vis_reconstructed / vis_reconstructed.max()
+            # 2. Reconstruct all components
+            original_img_data, reconstructed_img, tile_bboxes = _reconstruct_component(original_image_path, 'images', 'image', file_extension)
+            # Note: Tiled coverages are saved as PNG in the .run() method
+            original_cov_data, reconstructed_cov, _ = _reconstruct_component(original_coverage_path, 'coverages', 'coverage', 'png')
+            original_mask_data, reconstructed_mask, _ = _reconstruct_component(original_mask_path, 'masks', 'mask', file_extension)
 
-        # 5. Plotting
-        fig, axes = plt.subplots(1, 2, figsize=(20, 10))
-        axes[0].imshow(vis_image)
-        axes[0].set_title('Original Image with Tile Grid Overlay')
-        colors = plt.cm.cool(np.linspace(0, 1, len(tile_bboxes)))
-        for k, (x, y, w, h) in enumerate(tile_bboxes):
-            rect = patches.Rectangle((x, y), w, h, linewidth=2, edgecolor=colors[k], facecolor='none', alpha=1)
-            axes[0].add_patch(rect)
-            axes[0].text(x + 5, y + 20, f'{k+1}', fontsize=8, color='white', bbox=dict(boxstyle="round,pad=0.2", facecolor=colors[k], alpha=1))
+            if original_img_data is None:
+                print("Could not reconstruct the main image. Aborting visualization.")
+                return
 
-        axes[1].imshow(vis_reconstructed)
-        axes[1].set_title('Reconstructed Image from Tiles')
-        for ax in axes:
-            ax.set_xticks([]); ax.set_yticks([])
-        plt.tight_layout()
-        plt.show()
+            # 3. Prepare data for plotting
+            plot_data = []
+
+            # Prepare Image
+            if 'sentinel2' in os.path.basename(original_image_path).lower() and file_extension == 'tiff' and original_img_data.shape[0] >= 4:
+                vis_image = np.transpose(original_img_data[[3, 2, 1], :, :], (1, 2, 0))
+                vis_reconstructed = np.transpose(reconstructed_img[[3, 2, 1], :, :], (1, 2, 0))
+            else:
+                vis_image = np.transpose(original_img_data[:3], (1, 2, 0))
+                vis_reconstructed = np.transpose(reconstructed_img[:3], (1, 2, 0))
+            
+            if vis_image.dtype != np.uint8:
+                p2, p98 = np.percentile(vis_image, (2, 98))
+                if p98 > p2: vis_image = np.clip((vis_image - p2) / (p98 - p2), 0, 1)
+                elif vis_image.max() > 0: vis_image = vis_image / vis_image.max()
+            
+            if vis_reconstructed.dtype != np.uint8:
+                p2, p98 = np.percentile(vis_reconstructed, (2, 98))
+                if p98 > p2: vis_reconstructed = np.clip((vis_reconstructed - p2) / (p98 - p2), 0, 1)
+                elif vis_reconstructed.max() > 0: vis_reconstructed = vis_reconstructed / vis_reconstructed.max()
+            
+            plot_data.append({'title': 'Image', 'orig': vis_image, 'recon': vis_reconstructed, 'cmap': None})
+
+            # Prepare Coverage
+            if original_cov_data is not None:
+                plot_data.append({
+                    'title': 'Coverage', 
+                    'orig': np.squeeze(original_cov_data), 
+                    'recon': np.squeeze(reconstructed_cov), 
+                    'cmap': 'binary' # Use 'binary' colormap: 0=black, 1/255=white
+                })
+
+            # Prepare Mask
+            if original_mask_data is not None:
+                plot_data.append({
+                    'title': 'Fire Mask', 
+                    'orig': np.squeeze(original_mask_data), 
+                    'recon': np.squeeze(reconstructed_mask), 
+                    'cmap': 'viridis'
+                })
+
+            # 4. Plotting
+            num_rows = len(plot_data)
+            fig, axes = plt.subplots(num_rows, 2, figsize=(20, 8 * num_rows), squeeze=False)
+
+            # Generate colors for the grid once
+            if tile_bboxes:
+                colors = plt.cm.cool(np.linspace(0, 1, len(tile_bboxes)))
+
+            for i, data in enumerate(plot_data):
+                # Plot original (left column)
+                ax_orig = axes[i, 0]
+                ax_orig.imshow(data['orig'], cmap=data['cmap'])
+                ax_orig.set_title(f"Original {data['title']}")
+                
+                # Plot reconstructed (right column)
+                ax_recon = axes[i, 1]
+                im_recon = ax_recon.imshow(data['recon'], cmap=data['cmap'])
+                ax_recon.set_title(f"Reconstructed {data['title']}")
+
+                # Add grid overlay ONLY to the original plot (first column)
+                if tile_bboxes:
+                    ax_orig.set_title(ax_orig.get_title() + " with Tile Grid Overlay")
+                    for k, (x, y, w, h) in enumerate(tile_bboxes):
+                        rect = patches.Rectangle((x, y), w, h, linewidth=2, edgecolor=colors[k], facecolor='none', alpha=0.8)
+                        ax_orig.add_patch(rect)
+
+                # Add legends to reconstructed plots
+                if data['title'] == 'Coverage':
+                    legend_patches = [patches.Patch(color='white', label='Valid'),
+                                    patches.Patch(color='black', label='Invalid')]
+                    ax_recon.legend(handles=legend_patches, loc='best')
+                
+                elif data['title'] == 'Fire Mask':
+                    # Use make_axes_locatable to prevent misalignment
+                    divider = make_axes_locatable(ax_recon)
+                    cax = divider.append_axes("right", size="1%", pad=0.1)  # Change size of the color bar if images are not aligned
+                    cbar = fig.colorbar(im_recon, cax=cax)
+                    # cbar.set_label('Fire Severity Level')
+
+                # Remove ticks from all axes
+                for ax in axes[i]:
+                    ax.set_xticks([]); ax.set_yticks([])
+            
+            plt.tight_layout()
+            plt.show()
+
+        elif self.data_source == 'inference':
+            print("Not implemented yet for inference data source.")
+
+        else:
+            raise ValueError("Invalid data source. Use 'labelled' or 'inference'.")
