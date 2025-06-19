@@ -1,4 +1,5 @@
 from .display_image import display_image
+from .indices_visualizer import IndicesVisualizer
 from .visualize_predictions import visualize_predictions
 from .visualize_segmentation_errors import visualize_segmentation_errors
 from .visualize_segmentation_errors_sample import visualize_segmentation_errors_sample
