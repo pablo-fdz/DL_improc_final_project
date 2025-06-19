@@ -1,34 +1,41 @@
 import torch
 from .visualize_segmentation_errors import visualize_segmentation_errors
 
-def visualize_segmentation_errors_sample(images, true_masks, pred_probs, num_samples=3, threshold=0.5):
+def visualize_segmentation_errors_sample(images, true_masks, predictions, num_classes=2, num_samples=3, threshold=0.5, rgb_bands=None):
     """
     Visualize segmentation errors for multiple random samples.
+    Handles both binary and multi-class scenarios.
     
     Args:
-        images: Tensor of input images [N, C, H, W]
-        true_masks: Tensor of ground truth masks [N, H, W]
-        pred_probs: Tensor of predicted probabilities [N, H, W]
-        num_samples: Number of random samples to visualize
-        threshold: Threshold for converting probabilities to binary masks
+        images (torch.Tensor): Tensor of input images [N, C, H, W].
+        true_masks (torch.Tensor): Tensor of ground truth masks [N, H, W].
+        predictions (torch.Tensor): Tensor of model outputs.
+                                    - For binary, these are probabilities [N, H, W].
+                                    - For multi-class, these are class indices [N, H, W].
+        num_classes (int): Number of classes.
+        num_samples (int): Number of random samples to visualize.
+        threshold (float): Threshold for binary classification.
+        rgb_bands (tuple): Indices for R, G, B bands for multi-band images.
     """
-    # Get random indices
+    if len(images) < num_samples:
+        num_samples = len(images)
     indices = torch.randperm(len(images))[:num_samples].tolist()
     
-    # Visualize each sample
-    metrics = []
-    for idx in indices:
-        img = images[idx]
-        true_mask = true_masks[idx]
-        pred_prob = pred_probs[idx]
-        
-        print(f"\nSample {idx}:")
-        sample_metrics = visualize_segmentation_errors(img, true_mask, pred_prob, threshold)
-        metrics.append(sample_metrics)
+    all_metrics = []
+    for i, idx in enumerate(indices):
+        print(f"\n--- Visualizing Sample {i+1} (Index: {idx}) ---")
+        sample_metrics = visualize_segmentation_errors(
+            image=images[idx], 
+            true_mask=true_masks[idx], 
+            pred_mask=predictions[idx], 
+            num_classes=num_classes,
+            threshold=threshold,
+            rgb_bands=rgb_bands
+        )
+        all_metrics.append(sample_metrics)
     
-    # Print average metrics
-    avg_metrics = {key: sum(m[key] for m in metrics)/len(metrics) for key in metrics[0] 
-                  if key in ['precision', 'recall', 'f1', 'iou']}
-    print("\nAverage metrics across samples:")
-    for key, value in avg_metrics.items():
-        print(f"{key.capitalize()}: {value:.4f}")
+    if all_metrics:
+        avg_metrics = {key: sum(m[key] for m in all_metrics) / len(all_metrics) for key in all_metrics[0]}
+        print("\n--- Average Metrics Across Visualized Samples ---")
+        for key, value in avg_metrics.items():
+            print(f"Average {key.capitalize()}: {value:.4f}")

@@ -2,9 +2,9 @@ from torchmetrics import classification
 from tqdm import tqdm
 import torch
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=50, patience=10, delta=0.0001):
+def train_model(model, train_loader, val_loader, criterion, optimizer, num_classes, num_epochs=50, patience=10, delta=0.0001):
     """
-    Train the model with early stopping based on validation loss.
+    Train the model for binary or multi-class classification with early stopping based on validation loss.
     
     Args:
         model: The neural network model
@@ -12,6 +12,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         val_loader: DataLoader for validation data
         criterion: Loss function
         optimizer: Optimization algorithm
+        num_classes: Number of classes in the dataset. Must be equal or greater than 2
         num_epochs: Maximum number of training epochs
         patience: Number of epochs to wait for improvement before stopping
         delta: Minimum change in validation loss to qualify as improvement
@@ -21,6 +22,9 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         history: Dictionary containing training and validation metrics
     """
     
+    if num_classes < 2:
+        raise ValueError("Number of classes must be equal or greater than 2 for classification tasks.")
+
     ########################################
     # 1. Function setup and initialization
     ########################################
@@ -45,7 +49,12 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
     # Initialize metrics for IoU (Intersection over Union) calculation
     # - it calculates the overlap between the predicted and ground truth masks
     device = next(model.parameters()).device  # Get model's device
-    iou_metric = classification.BinaryJaccardIndex().to(device)
+    if num_classes == 2:
+        # Binary classification (e.g., foreground vs background)
+        iou_metric = classification.BinaryJaccardIndex().to(device)
+    else:
+        # Multi-class classification (e.g., multiple classes)
+        iou_metric = classification.MulticlassJaccardIndex(num_classes=num_classes).to(device)
     
     ########################################
     # 2. Training loop
@@ -74,14 +83,22 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
             optimizer.zero_grad()
             
             # Forward pass
-            outputs = model(inputs)
+            outputs = model(inputs)  # For multi-class, labels should be [B, H, W] with class indices (Batch, Height, Width)
             
-            # Squeeze to match dimensions for loss calculation
-            outputs = outputs.squeeze(1)  # From [B, 1, H, W] to [B, H, W]
-            labels = labels.squeeze(1)    # From [B, 1, H, W] to [B, H, W]
+            # Squeeze labels if they have a channel dim of 1, required for CrossEntropyLoss
+            if labels.dim() == 4 and labels.shape[1] == 1:
+                labels = labels.squeeze(1)
             
-            # Compute loss
-            loss = criterion(outputs, labels)
+            # For binary classification, the original code squeezed the output.
+            # We keep this logic for the binary case but use the full output for multi-class.
+            if num_classes == 2 and outputs.shape[1] == 1:  # Squeeze output if binary classification
+                outputs = outputs.squeeze(1)
+
+            # Compute loss, ensuring labels have the correct dtype
+            if isinstance(criterion, torch.nn.BCEWithLogitsLoss):
+                loss = criterion(outputs, labels.float())
+            else:  # Assumes CrossEntropyLoss or similar, which expect long integers
+                loss = criterion(outputs, labels.long())
             
             # Backward pass and optimize
             loss.backward()
@@ -90,12 +107,15 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
             # Update statistics
             running_train_loss += loss.item() * inputs.size(0)
             
-            # Calculate IoU (convert outputs to binary predictions using 0.5 threshold)
+           # Calculate IoU
+            if num_classes > 2:
+                # For multi-class, get predictions by finding the class with the highest score
+                preds = torch.argmax(outputs, dim=1)
+            else:
+                # For binary, apply sigmoid and threshold
+                preds = (torch.sigmoid(outputs) > 0.5).float()
             
-            # Calculation of the IoU metric if the model outputs logits
-            probs = torch.sigmoid(outputs)  # Conversion to probabilities - needed if the model outputs logits (comment otherwise)
-            preds = (probs > 0.5).float()  # Now threshold the probabilities
-            running_train_iou += iou_metric(preds, labels) * inputs.size(0)
+            running_train_iou += iou_metric(preds, labels.long()) * inputs.size(0)
             
             # Update progress bar
             progress_bar.set_description(f"Train Loss: {loss.item():.4f}")
@@ -124,21 +144,32 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
                 
                 # Forward pass
                 outputs = model(inputs)
+
+                # Squeeze labels if they have a channel dim of 1, required for CrossEntropyLoss
+                if labels.dim() == 4 and labels.shape[1] == 1:
+                    labels = labels.squeeze(1)
+
+                if num_classes == 2 and outputs.shape[1] == 1:
+                    outputs = outputs.squeeze(1)
                 
-                # Squeeze to match dimensions
-                outputs = outputs.squeeze(1)
-                labels = labels.squeeze(1)
-                
-                # Compute loss
-                loss = criterion(outputs, labels)
+                # Compute loss, ensuring labels have the correct dtype
+                if isinstance(criterion, torch.nn.BCEWithLogitsLoss):
+                    loss = criterion(outputs, labels.float())
+                else:  # Assumes CrossEntropyLoss or similar, which expect long integers
+                    loss = criterion(outputs, labels.long())
                 
                 # Update statistics
                 running_val_loss += loss.item() * inputs.size(0)
                 
                 # Calculate IoU
-                probs = torch.sigmoid(outputs)  # Conversion to probabilities - needed if the model outputs logits (comment otherwise)
-                preds = (outputs > 0.5).float()
-                running_val_iou += iou_metric(preds, labels) * inputs.size(0)
+                if num_classes > 2:
+                    # For multi-class, get predictions by finding the class with the highest score
+                    preds = torch.argmax(outputs, dim=1)
+                else:
+                    # For binary, apply sigmoid and threshold
+                    preds = (torch.sigmoid(outputs) > 0.5).float()
+                
+                running_val_iou += iou_metric(preds, labels.long()) * inputs.size(0)
                 
                 # Update progress bar
                 progress_bar.set_description(f"Val Loss: {loss.item():.4f}")
