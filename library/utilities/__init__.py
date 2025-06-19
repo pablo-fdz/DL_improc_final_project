@@ -1,5 +1,8 @@
-from .read_image_numpy import read_image_numpy, read_tiff_image
 from .save_model import save_model
 from .load_model import load_model
 from .print_directory_structure import print_directory_structure
 from .build_path_dictionary import build_path_dictionary
+from .read_png_to_numpy import read_png_to_numpy
+from .read_png_to_torch import read_png_to_torch
+from .read_tiff_to_numpy import read_tiff_to_numpy
+from .read_tiff_to_torch import read_tiff_to_torch
