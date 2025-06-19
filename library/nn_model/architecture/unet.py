@@ -25,8 +25,8 @@ class UNet(nn.Module):
 
         self.outc  = OutConv(base_filters, n_classes)  # 8→n_classes
 
-        # Activation function for the output layer (only if loss compatible with probabilities)
-        self.activation = nn.Sigmoid()  # final non-linearity for binary masks (convert logits to probabilities)
+        # Activation function for the output layer (only if loss compatible with probabilities and not only logits)
+        # self.activation = nn.Sigmoid()  # final non-linearity for binary masks (convert logits to probabilities)
         # self.activation = nn.Softmax(dim=1)  # final non-linearity for multi-class masks (convert logits to probabilities)
 
     def forward(self, x):
