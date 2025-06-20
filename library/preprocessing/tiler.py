@@ -1,6 +1,5 @@
-from library.preprocessing.labelled_dataset import (get_latest_images, 
-                                                    find_fire_event_folders,
-                                                    get_corresponding_files)
+from .labelled_dataset import (get_latest_images, find_fire_event_folders, get_corresponding_files)
+from .inference_dataset import (find_year_folders, get_matching_images)
 from rasterio.windows import Window
 import math
 import rasterio
@@ -40,7 +39,10 @@ class Tiler():
             return fire_folders
         
         elif self.data_source == 'inference':
-            raise ValueError("Inference data source does not have fire event folders.")
+            year_folders = find_year_folders(input_dir)
+            if not year_folders:
+                raise ValueError("No year folders found in the inference data source.")
+            return year_folders
 
     def _get_latest_images(self, folder, file_extension='tiff'):
         """
@@ -78,7 +80,7 @@ class Tiler():
             return get_corresponding_files(image_path, file_extension=file_extension)
         
         elif self.data_source == 'inference':
-            raise ValueError("Inference data source does not have corresponding files.")
+            return get_matching_images(image_path, file_extension=file_extension)
 
     def _tile_image(self, image_path, output_dir, tile_size=256, file_extension='tiff'):
         """
@@ -234,20 +236,67 @@ class Tiler():
 
         elif self.data_source == 'inference':
             
-            print("Not implemented yet for inference data source.")
+            # Find all year folders in the inference dataset
+            year_folders = self._get_folders(self.input_dir)
+
+            if not year_folders:
+                print("No year folders found. Please check the input directory.")
+                return
+
+            for year_folder in year_folders:
+                year_name = os.path.basename(year_folder)
+                print(f"\nProcessing year: {year_name}")
+
+                # Create a corresponding output directory for the year
+                year_output_dir = os.path.join(tiled_output_dir, year_name)
+                os.makedirs(year_output_dir, exist_ok=True)
+
+                # Get all matching Sentinel-1 and Sentinel-2 images for the year
+                # This returns a list of dicts, each representing a fire event
+                fire_events = get_matching_images(year_folder, file_extension=file_extension)
+
+                if not fire_events:
+                    print(f"No images found in {year_folder}")
+                    continue
+                
+                # Loop through each fire event and tile its images
+                for event in fire_events:
+                    print(f"  Tiling event: {event['id']}")
+                    
+                    # Tile Sentinel-1 image if it exists
+                    if event['sentinel1']:
+                        self._tile_image(
+                            image_path=event['sentinel1'],
+                            output_dir=year_output_dir,
+                            tile_size=tile_size,
+                            file_extension=file_extension
+                        )
+                    
+                    # Tile Sentinel-2 image if it exists
+                    if event['sentinel2']:
+                        self._tile_image(
+                            image_path=event['sentinel2'],
+                            output_dir=year_output_dir,
+                            tile_size=tile_size,
+                            file_extension=file_extension
+                        )
+
+            print(f"\nTiling completed for the inference dataset. Tiled images saved to: {tiled_output_dir}")
         
         else:
             raise ValueError("Invalid data source. Use 'labelled' or 'inference'.")
     
-    def visualize_reconstruction(self, fire_event_name, tiled_base_dir, tile_size=256, file_extension='tiff'):
+    def visualize_reconstruction(self, tiled_base_dir, fire_event_name=None, year=None, event_id=None, tile_size=256, file_extension='tiff'):
         """
-        Reconstructs the Sentinel-2 image, its coverage, and mask from saved tiles and visualizes them.
+        Reconstructs images from saved tiles and visualizes them.
 
         Args:
-            fire_event_name (str): Name of the fire event to visualize.
             tiled_base_dir (str): Base directory where the tiled images are saved.
-            tile_size (int): Size of the tiles used for reconstruction (default is 256).
-            file_extension (str): File extension of the images to be visualized (default is 'tiff').
+            fire_event_name (str, optional): Name of the fire event (for 'labelled' source). Defaults to None.
+            year (str or int, optional): The year of the fire event (for 'inference' source). Defaults to None.
+            event_id (str, optional): The unique ID of the fire event (for 'inference' source). Defaults to None.
+            tile_size (int, optional): Size of the tiles. Defaults to 256.
+            file_extension (str, optional): File extension of the images. Defaults to 'tiff'.
         """
 
         if self.data_source == 'labelled':
@@ -426,7 +475,151 @@ class Tiler():
             plt.show()
 
         elif self.data_source == 'inference':
-            print("Not implemented yet for inference data source.")
+            print(f"\n--- Visualizing reconstruction for inference data ---")
+        
+            if not year or not event_id:
+                print("ERROR: For inference data, 'year' and 'event_id' must be provided.")
+                return
+
+            # --- 1. Find original and tiled files ---
+            original_year_folder = os.path.join(self.input_dir, str(year))
+            tiled_year_folder = os.path.join(tiled_base_dir, str(year))
+
+            if not os.path.exists(original_year_folder):
+                print(f"ERROR: Original year folder not found at {original_year_folder}")
+                return
+            if not os.path.exists(tiled_year_folder):
+                print(f"ERROR: Tiled year folder not found at {tiled_year_folder}")
+                return
+
+            # Find the specific event from the original data to get file paths
+            all_events = get_matching_images(original_year_folder, file_extension=file_extension)
+            target_event = next((e for e in all_events if e['id'] == event_id), None)
+
+            if not target_event:
+                print(f"ERROR: Event with ID '{event_id}' not found in year {year}.")
+                return
+                
+            original_s1_path = target_event.get('sentinel1')
+            original_s2_path = target_event.get('sentinel2')
+            
+            print(f"Found event: {event_id} in year {year}")
+            if original_s1_path: print(f"  Original S1: {os.path.basename(original_s1_path)}")
+            if original_s2_path: print(f"  Original S2: {os.path.basename(original_s2_path)}")
+
+            # --- Helper function for reconstruction ---
+            def _reconstruct_inference_component(original_path, tiled_dir, component_name):
+                if not original_path or not os.path.exists(original_path):
+                    print(f"Info: Original {component_name} file not found, skipping reconstruction.")
+                    return None, None, None
+
+                with rasterio.open(original_path) as src:
+                    original_data = src.read()
+                    bands, img_height, img_width = original_data.shape
+                    tile_height, tile_width = tile_size, tile_size
+
+                original_basename = os.path.splitext(os.path.basename(original_path))[0]
+                
+                reconstructed_image = np.zeros_like(original_data, dtype=np.float32)
+                counts = np.zeros_like(original_data, dtype=np.float32)
+                tile_bboxes = []
+
+                n_tiles_h = math.ceil(img_height / tile_height)
+                n_tiles_w = math.ceil(img_width / tile_width)
+                y_starts = np.linspace(0, img_height - tile_height, n_tiles_h, dtype=int)
+                x_starts = np.linspace(0, img_width - tile_width, n_tiles_w, dtype=int)
+
+                for i, y in enumerate(y_starts):
+                    for j, x in enumerate(x_starts):
+                        tile_path = os.path.join(tiled_dir, f"{original_basename}_tile_{i}_{j}.{file_extension}")
+                        if os.path.exists(tile_path):
+                            with rasterio.open(tile_path) as tile_src:
+                                tile = tile_src.read()
+                            
+                            tile_slice = (slice(None), slice(y, y + tile_height), slice(x, x + tile_width))
+                            reconstructed_image[tile_slice] += tile
+                            counts[tile_slice] += 1
+                            tile_bboxes.append((x, y, tile_width, tile_height))
+                
+                if np.sum(counts) == 0:
+                    print(f"ERROR: No tiles found for {component_name} in {tiled_dir}")
+                    return None, None, None
+
+                reconstructed_image = np.divide(reconstructed_image, counts, out=np.zeros_like(reconstructed_image), where=counts!=0)
+                reconstructed_image = reconstructed_image.astype(original_data.dtype)
+
+                return original_data, reconstructed_image, tile_bboxes
+
+            # --- 2. Reconstruct S1 and S2 images ---
+            original_s1_data, reconstructed_s1, s1_bboxes = _reconstruct_inference_component(original_s1_path, tiled_year_folder, 'Sentinel-1')
+            original_s2_data, reconstructed_s2, s2_bboxes = _reconstruct_inference_component(original_s2_path, tiled_year_folder, 'Sentinel-2')
+
+            if original_s1_data is None and original_s2_data is None:
+                print("Could not reconstruct any image. Aborting visualization.")
+                return
+
+            # --- 3. Plotting ---
+            plot_data = []
+            if original_s1_data is not None:
+                # For S1, visualize the first band (VV polarization) in grayscale
+                plot_data.append({
+                    'title': 'Sentinel-1 (VV Band)',
+                    'orig': np.squeeze(original_s1_data[0, :, :]),
+                    'recon': np.squeeze(reconstructed_s1[0, :, :]),
+                    'cmap': 'gray',
+                    'bboxes': s1_bboxes
+                })
+            
+            if original_s2_data is not None:
+                # For S2, visualize RGB (Bands B04, B03, B02 are at indices 3, 2, 1)
+                vis_image = np.transpose(original_s2_data[[3, 2, 1], :, :], (1, 2, 0))
+                vis_reconstructed = np.transpose(reconstructed_s2[[3, 2, 1], :, :], (1, 2, 0))
+                
+                # Normalize for better visualization
+                p2, p98 = np.percentile(vis_image, (2, 98))
+                if p98 > p2: vis_image = np.clip((vis_image - p2) / (p98 - p2), 0, 1)
+                elif vis_image.max() > 0: vis_image = vis_image / vis_image.max()
+                
+                p2, p98 = np.percentile(vis_reconstructed, (2, 98))
+                if p98 > p2: vis_reconstructed = np.clip((vis_reconstructed - p2) / (p98 - p2), 0, 1)
+                elif vis_reconstructed.max() > 0: vis_reconstructed = vis_reconstructed / vis_reconstructed.max()
+
+                plot_data.append({
+                    'title': 'Sentinel-2 (RGB)',
+                    'orig': vis_image,
+                    'recon': vis_reconstructed,
+                    'cmap': None,
+                    'bboxes': s2_bboxes
+                })
+
+            num_rows = len(plot_data)
+            if num_rows == 0:
+                print("No data to plot.")
+                return
+                
+            fig, axes = plt.subplots(num_rows, 2, figsize=(20, 8 * num_rows), squeeze=False)
+            fig.suptitle(f"Reconstruction for Event: {event_id} (Year: {year})", fontsize=20)
+
+            for i, data in enumerate(plot_data):
+                ax_orig = axes[i, 0]
+                ax_orig.imshow(data['orig'], cmap=data['cmap'])
+                ax_orig.set_title(f"Original {data['title']} with Tile Grid")
+                
+                ax_recon = axes[i, 1]
+                ax_recon.imshow(data['recon'], cmap=data['cmap'])
+                ax_recon.set_title(f"Reconstructed {data['title']}")
+
+                if data['bboxes']:
+                    colors = plt.cm.cool(np.linspace(0, 1, len(data['bboxes'])))
+                    for k, (x, y, w, h) in enumerate(data['bboxes']):
+                        rect = patches.Rectangle((x, y), w, h, linewidth=2, edgecolor=colors[k], facecolor='none', alpha=0.8)
+                        ax_orig.add_patch(rect)
+
+                for ax in axes[i]:
+                    ax.set_xticks([]); ax.set_yticks([])
+            
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+            plt.show()
 
         else:
             raise ValueError("Invalid data source. Use 'labelled' or 'inference'.")
