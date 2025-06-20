@@ -7,7 +7,8 @@ import tifffile
 
 def read_tiff_to_torch(file_path: str, dtype: torch.dtype = torch.float32, normalize: bool = False, normalization_method='per_channel') -> torch.Tensor:
     """
-    Imports tiff images as a torch tensors.
+    Imports tiff images as a torch tensors. Handles NaNs and invalid values and 
+    normalizes pixel values if specified.
 
     Args:
         file_path (str): Path to the .tiff file
@@ -24,85 +25,57 @@ def read_tiff_to_torch(file_path: str, dtype: torch.dtype = torch.float32, norma
         img = img.transpose(2, 0, 1)  # [C, H, W]
 
     if normalize:
-    #     img = img.astype(np.float32)
-
-    #     if normalization_method == '255':
-    #         img = img / 255.0
-    #     elif normalization_method == 'minmax':  # Normalize to [0, 1] range
-    #         img_min, img_max = img.min(), img.max()
-    #         if img_max - img_min == 0:
-    #             # If all values are the same, set to 0 (or keep original values)
-    #             img = np.zeros_like(img)
-    #         else:
-    #             img = (img - img_min) / (img_max - img_min)
-    #     elif normalization_method == 'std':  # Normalize to zero mean and unit variance, same for all channels
-    #         img_std = img.std()
-    #         if img_std == 0:
-    #             # If std is 0, just center the data (subtract mean)
-    #             img = img - img.mean()
-    #         else:
-    #             img = (img - img.mean()) / img_std
-    #     elif normalization_method == 'per_channel':  # Normalize each channel independently
-    #         for c in range(img.shape[0]):
-    #             channel = img[c]
-    #             channel_mean = channel.mean()
-    #             channel_std = channel.std()
-                
-    #             if channel_std == 0:
-    #                 # If std is 0, just center the channel (subtract mean)
-    #                 img[c] = channel - channel_mean
-    #             else:
-    #                 img[c] = (channel - channel_mean) / channel_std
-    #     else:
-    #         raise ValueError(f"Unknown normalization method: {normalization_method}")
-
-    # return torch.from_numpy(img).type(dtype)
-
         img = img.astype(np.float32)
         
         if normalization_method == '255':
-            img = img / 255.0
+            img_normalized = np.zeros_like(img, dtype=np.float32)
+            valid_pixels = np.isfinite(img)
+            img_normalized[valid_pixels] = img[valid_pixels] / 255.0
+            img = img_normalized
         elif normalization_method == 'minmax':  # Normalize to [0, 1] range
-            img_min, img_max = np.nanmin(img), np.nanmax(img)
-            if img_max - img_min == 0:
-                # If all values are the same, set to 0 (or keep original values)
-                img = np.zeros_like(img)
-            else:
-                img = (img - img_min) / (img_max - img_min)
-            img = np.nan_to_num(img) # Replace any NaNs with 0
+            img_normalized = np.zeros_like(img, dtype=np.float32)
+            valid_pixels = np.isfinite(img)  # Use isfinite to exclude NaNs and Infs
+
+            if np.any(valid_pixels):
+                img_valid = img[valid_pixels]
+                img_min, img_max = img_valid.min(), img_valid.max()
+                if (img_max - img_min) > 0:
+                    img_normalized[valid_pixels] = (img_valid - img_min) / (img_max - img_min)
+            img = img_normalized
         elif normalization_method == 'std':  # Normalize to zero mean and unit variance, same for all channels
-            if np.all(np.isnan(img)):
-                img = np.zeros_like(img)
-            else:
-                img_mean = np.nanmean(img)
-                img_std = np.nanstd(img)
-                if img_std == 0:
-                    # If std is 0, just center the data (subtract mean)
-                    img = img - img_mean
+            img_normalized = np.zeros_like(img, dtype=np.float32)
+            valid_pixels = np.isfinite(img)  # Use isfinite to exclude NaNs and Infs
+
+            if np.any(valid_pixels):
+                img_valid = img[valid_pixels]
+                img_mean = img_valid.mean()
+                img_std = img_valid.std()
+                if img_std > 0:
+                    img_normalized[valid_pixels] = (img_valid - img_mean) / img_std
                 else:
-                    img = (img - img_mean) / img_std
-                # Replace any remaining NaNs (from pixels that were NaN) with 0
-                img = np.nan_to_num(img)
+                    # If std is 0, just center the data
+                    img_normalized[valid_pixels] = img_valid - img_mean
+            img = img_normalized
         elif normalization_method == 'per_channel':  # Normalize each channel independently
+            img_normalized = np.zeros_like(img, dtype=np.float32)
             for c in range(img.shape[0]):
                 channel = img[c]
-                
-                # If channel is all NaNs, set it to 0 and continue
-                if np.all(np.isnan(channel)):
-                    img[c] = np.zeros_like(channel)
+                valid_pixels = np.isfinite(channel)  # Use isfinite to exclude NaNs and Infs
+
+                if not np.any(valid_pixels):
                     continue
 
-                channel_mean = np.nanmean(channel)
-                channel_std = np.nanstd(channel)
+                channel_valid = channel[valid_pixels]
                 
-                if channel_std == 0:
-                    # If std is 0, just center the channel (subtract mean)
-                    img[c] = channel - channel_mean
+                channel_mean = channel_valid.mean()
+                channel_std = channel_valid.std()
+                
+                if channel_std > 0:
+                    img_normalized[c, valid_pixels] = (channel_valid - channel_mean) / channel_std
                 else:
-                    img[c] = (channel - channel_mean) / channel_std
-            
-            # Replace any remaining NaNs (from pixels that were NaN) with 0
-            img = np.nan_to_num(img)
+                    # If std is 0, just center the data
+                    img_normalized[c, valid_pixels] = channel_valid - channel_mean
+            img = img_normalized
         else:
             raise ValueError(f"Unknown normalization method: {normalization_method}")
 
