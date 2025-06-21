@@ -17,3 +17,4 @@ tqdm==4.67.1
 tifffile==2025.3.30
 shapely==2.0.6
 imagecodecs==2025.3.30
+scipy==1.15.2
