@@ -114,11 +114,12 @@ DL_improc_final_project/
 
 ### `6_inference_catalunya_S2.ipynb`
 **Catalunya Fire Severity Inference**
-- Applies trained Sentinel-2 model to Catalunya fire imagery
-- Processes all retrieved satellite images for severity assessment
-- Generates severity maps for each fire event
-- Creates visualizations of predicted fire damage
-- Outputs: Fire severity assessments for Catalunya 2014-2023
+- Applies the trained U-Net model to the entire tiled Catalunya fire dataset (2015-2023).
+- Aggregates pixel-level predictions to calculate total burnt area and severity proportions for each year, correcting for missing data.
+- **Answers key research questions**:
+  1.  Analyzes and visualizes the trend in total burnt area over the last decade.
+  2.  Performs a statistical test (linear regression) to assess if wildfire severity has significantly increased over time.
+- **Outputs**: Quantitative analysis, visualizations, and statistical tests on wildfire trends in Catalunya.
 
 ## Key Features
 
