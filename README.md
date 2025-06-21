@@ -11,7 +11,7 @@ Fire polygon data for Catalunya from 2014-2023 obtained from:
 - **Format**: Shapefiles containing fire boundaries, activation dates, and municipality information, from 2014 to 2023.
 
 ### 2. Labelled Dataset for Training
-Pre-labeled wildfire severity dataset from:
+Annotated wildfire severity dataset from:
 - **Citation**: Luca Colomba, Alessandro Farasin, Simone Monaco, Salvatore Greco, Paolo Garza, Daniele Apiletti, Elena Baralis, and Tania Cerquitelli. 2022. A Dataset for Burned Area Delineation and Severity Estimation from Satellite Imagery. In Proceedings of the 31st ACM International Conference on Information & Knowledge Management (CIKM '22). Association for Computing Machinery, New York, NY, USA, 3893–3897. https://doi.org/10.1145/3511808.3557528
 - **URL**: https://zenodo.org/records/6597139
 - **Content**: ~14GB of Sentinel-1 GRD and Sentinel-2 L2A images with fire severity masks (5 classes: unburned to completely destroyed)
