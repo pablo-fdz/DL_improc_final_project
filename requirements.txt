@@ -8,3 +8,11 @@ oauthlib==3.2.2
 Pillow==11.2.1
 folium==0.20.0
 rasterio==1.4.3
+torch==2.7.0
+torchvision==0.22.0
+torchmetrics==1.7.1
+scikit-learn==1.6.1
+seaborn==0.13.2
+tqdm==4.67.1
+tifffile==2025.3.30
+shapely==2.0.6
