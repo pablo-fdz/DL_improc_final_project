@@ -56,7 +56,6 @@ class DataExplorer:
                 total_pixels = img.numel()
                 self.total_coverage_pixels += total_pixels
 
-                flat = img.flatten()
                 values, counts = torch.unique(flat, return_counts=True)
 
                 # Check pixel composition
@@ -107,7 +106,7 @@ class DataExplorer:
         viridis_colors = self._get_viridis_colors_for_classes(self.pixel_values_dict)
         selected_colors = [viridis_colors[1], viridis_colors[4]]  # Use 2nd and 5th colors
 
-        fig, axes = plt.subplots(2, 1, figsize=(8, 6), gridspec_kw={'height_ratios': [1, 1]})
+        fig, axes = plt.subplots(2, 1, figsize=(6, 4), gridspec_kw={'height_ratios': [1, 1]})
 
         sns.set(style="whitegrid", palette="pastel", font_scale=1.2)
 
@@ -224,6 +223,82 @@ class DataExplorer:
             
         return colors
     
+    def count_regrouped_mask_pixels(self, dtype: torch.dtype = torch.float32, normalize: bool = False, normalization_method: str = None,
+                        map_to_classes: bool = False):
+        """
+        Count mask pixels with option to map to 5 burn severity classes
+        
+        Args:
+            dtype: Data type for the tensor
+            normalize: Whether to normalize the pixel values
+            map_to_classes: If True, map pixel values to 5 burn severity classes 
+                        representing [0, 64, 128, 191, 255] in the original scale
+        """
+        file_paths = self.paths.get('masks', [])
+        
+        self.pixel_counts = defaultdict(int)
+        self.total_pixel_count = 0
+        self.images_with_only_zero = 0
+        self.files_with_only_0_labels_path_list = []
+        
+        # Update pixel values dictionary if mapping to 5 classes
+        if map_to_classes:
+            self.pixel_values_dict = {
+                0: '0',
+                1: '1',
+                2: '2',
+                3: '3',
+                4: '4'
+            }
+
+        for path in file_paths:
+            img = read_tiff_to_torch(path, dtype=dtype, normalize=normalize, normalization_method=normalization_method)
+            
+            # Apply mapping to classes if requested
+            if map_to_classes:
+                img = self._map_to_burn_severity_classes(img)
+            
+            total_pixels = img.numel()
+            self.total_pixel_count += total_pixels
+
+            flat = img.flatten()
+            values, counts = torch.unique(flat, return_counts=True)
+
+            # Check if this image has only 0 pixels
+            if len(values) == 1 and values[0].item() == 0:
+                self.images_with_only_zero += 1
+                self.files_with_only_0_labels_path_list.append(path)
+
+            for val, count in zip(values, counts):
+                self.pixel_counts[val.item()] += count.item()
+
+        # Print final aggregated results
+        for val, count in sorted(self.pixel_counts.items()):
+            pct = (count / self.total_pixel_count) * 100
+            class_label = self.pixel_values_dict.get(val, f"Unknown ({val})")
+            print(f"Class {class_label:<20}: {count:>11,} pixels ({pct:5.2f} %)")
+
+        total_images = len(file_paths)
+        zero_pct = (self.images_with_only_zero / total_images) * 100 if total_images > 0 else 0
+
+        print(f"\nImages with only unburned pixels: {self.images_with_only_zero} ({zero_pct:5.2f}%)")
+
+    def _map_to_burn_severity_classes(self, img):
+        """
+        Map original pixel values (0-255) to 5 burn severity classes (0-4)
+        """
+        # Create output tensor with same shape but integer type
+        mapped = torch.zeros_like(img, dtype=torch.long)
+        
+        # Define class boundaries in 0-255 space
+        mapped[(img <= 32)] = 0                         # Unburned
+        mapped[(img > 32) & (img <= 96)] = 1            # Low Severity
+        mapped[(img > 96) & (img <= 159)] = 2           # Moderate-Low Severity
+        mapped[(img > 159) & (img <= 223)] = 3          # Moderate-High Severity
+        mapped[(img > 223)] = 4                         # High Severity
+        
+        return mapped
+    
     def visualize_mask_pixels(self):
 
         # Main pixel count barplot (sorted by class label order)
@@ -235,7 +310,7 @@ class DataExplorer:
         viridis_colors = self._get_viridis_colors_for_classes(self.pixel_values_dict)
         reduced_viridis = viridis_colors[1], viridis_colors[4] # second and fifth colors
 
-        fig, axes = plt.subplots(2, 1, figsize=(8, 9), gridspec_kw={'height_ratios': [3, 1]})
+        fig, axes = plt.subplots(2, 1, figsize=(6, 7), gridspec_kw={'height_ratios': [3, 1]})
 
         sns.set(style="whitegrid", palette="pastel", font_scale=1.2)
         ax = axes[0]
@@ -262,7 +337,7 @@ class DataExplorer:
         ax2 = axes[1]
         sns.barplot(
             x=[only_negative, negative_and_positive],
-            y=['Only negative pixels', 'Negative and positive pixels'],
+            y=['Only negative', 'Negative & positive'],
             palette=reduced_viridis,
             orient='h',
             ax=ax2
@@ -282,7 +357,8 @@ class DataExplorer:
 
     def plot_sentinel2_bands_distribution(self):
         """
-        Creates overlapping density plots for all 13 Sentinel-2 bands.
+        Creates a density plot for all 13 Sentinel-2 bands on a single axis,
+        using colors that approximate the actual wavelengths where possible.
         """
         
         sentinel2_paths = self.paths.get('sentinel2', [])
@@ -306,6 +382,23 @@ class DataExplorer:
             10: "B10 - SWIR Cirrus (1375 nm)",
             11: "B11 - SWIR (1610 nm)",
             12: "B12 - SWIR (2190 nm)"
+        }
+        
+        # Define colors that approximate the actual wavelengths
+        band_colors = {
+            0: '#6a92ff',  # Light blue for coastal aerosol
+            1: '#0000ff',  # Blue
+            2: '#00ff00',  # Green
+            3: '#ff0000',  # Red
+            4: '#ff3d3d',  # Lighter red for red edge
+            5: '#ff7d7d',  # Pale red for red edge
+            6: '#ffb1b1',  # Very pale red for red edge
+            7: '#8f1fff',  # Purple for NIR
+            8: '#7300ff',  # Deeper purple for narrow NIR
+            9: '#4a00ff',  # Indigo for water vapor
+            10: '#3200aa', # Dark blue for SWIR Cirrus
+            11: '#240070', # Very dark blue for SWIR
+            12: '#120038'  # Almost black purple for SWIR
         }
         
         # Sample pixels from each band (sampling to avoid memory issues)
@@ -343,104 +436,49 @@ class DataExplorer:
                 print(f"Error processing {path}: {e}")
                 continue
         
-        # Create overlapping density plots
-        plt.figure(figsize=(15, 8))
+        # Create a single plot with all bands
+        plt.figure(figsize=(15, 10))
         
-        # Grouping bands by their domain
-        band_groups = {
-            "Visible": [1, 2, 3],  # Blue, Green, Red (indices 1, 2, 3)
-            "Vegetation Red Edge": [4, 5, 6],  # (indices 4, 5, 6)
-            "Near Infrared": [7, 8],  # NIR and Narrow NIR (indices 7, 8)
-            "Special Purpose": [0, 9, 10],  # Coastal aerosol, Water vapor, Cirrus (indices 0, 9, 10)
-            "SWIR": [11, 12]  # SWIR bands (indices 11, 12)
-        }
+        # Plot each band with its representative color
+        for band in range(13):
+            if band_samples[band]:
+                sns.kdeplot(
+                    band_samples[band], 
+                    label=band_info[band],
+                    color=band_colors[band],
+                    fill=True,
+                    alpha=0.2
+                )
         
-        # Create subplots for each group
-        fig, axes = plt.subplots(len(band_groups), 1, figsize=(15, 15), sharex=True)
-        
-        for i, (group_name, band_indices) in enumerate(band_groups.items()):
-            ax = axes[i]
-            ax.set_title(f"{group_name} Bands", fontsize=14)
-            
-            # Get a color palette for this group
-            colors = sns.color_palette("husl", len(band_indices))
-            
-            for j, band_idx in enumerate(band_indices):
-                if band_samples[band_idx]:
-                    sns.kdeplot(
-                        band_samples[band_idx], 
-                        ax=ax,
-                        label=band_info[band_idx],
-                        color=colors[j],
-                        fill=True,
-                        alpha=0.3
-                    )
-            
-            ax.legend()
-            ax.set_ylabel("Density")
-        
-        axes[-1].set_xlabel("Pixel Intensity")
+        plt.title("Distribution of Pixel Values Across All Sentinel-2 Bands", fontsize=16)
+        plt.xlabel("Pixel Intensity", fontsize=14)
+        plt.ylabel("Density", fontsize=14)
+        plt.legend(fontsize=12)
+        plt.grid(True, linestyle='--', alpha=0.3)
+        plt.xlim([-5, 10]) 
         plt.tight_layout()
         plt.show()
         
-        # Create a boxplot of all bands
+        # Create a boxplot of all bands with the same colors
         plt.figure(figsize=(15, 8))
-        box_data = [band_samples[i] for i in range(13)]
-        plt.boxplot(box_data, labels=[f"B{i+1}" for i in range(13)], notch=True)
-        plt.title("Distribution of Pixel Values Across Sentinel-2 Bands")
-        plt.xlabel("Spectral Band")
-        plt.ylabel("Pixel Value")
-        plt.grid(True, linestyle='--', alpha=0.7)
+        boxprops = dict(linestyle='-', linewidth=1.5)
+        
+        # Create the boxplot with custom colors
+        box_plot = plt.boxplot(
+            [band_samples[i] for i in range(13)], 
+            labels=[f"B{i+1}" for i in range(13)], 
+            notch=True,
+            patch_artist=True,  # Fill the boxes with color
+            boxprops=boxprops
+        )
+        
+        # Color the boxes according to their representative colors
+        for i, box in enumerate(box_plot['boxes']):
+            box.set(facecolor=band_colors[i], alpha=0.6)
+            box.set(edgecolor=band_colors[i], linewidth=1.5)
+        
+        plt.title("Distribution of Pixel Values Across Sentinel-2 Bands", fontsize=16)
+        plt.xlabel("Spectral Band", fontsize=14)
+        plt.ylabel("Pixel Value", fontsize=14)
+        plt.grid(True, linestyle='--', alpha=0.3)
         plt.show()
-
-
-
-    # def analyze_flood_images(list_of_paths: Dict[str, List[str]]) -> None:
-    #     """
-    #     Analyze flood images to count water and background pixels and tiles.
-
-    #     Args:
-    #         flood_image_paths: List of flood image paths.
-
-    #     Returns:
-    #         total_water_pixels: Total number of water pixels.
-    #         total_background_pixels: Total number of background pixels.
-    #         total_water_tiles: Total number of water tiles.
-    #         total_background_tiles: Total number of background tiles.
-
-    #     Raises:
-    #         AssertionError: An assertion error occurred while processing the image.
-    #         Exception: An error occurred while processing the image.
-    #     """
-    #     total_fire_pixels = 0
-    #     total_1_pixels = 0
-    #     total_2_pixels = 0
-    #     total_3_pixels = 0
-    #     total_4_pixels = 0
-    #     total_background_pixels = 0
-    #     total_defective_pixels = 0
-
-    #     for filename in tqdm(paths, desc="Analyzing images"):
-    #         try:
-    #             img = mpimg.imread(filename)
-    #             assert np.shape(img) == (512, 512, 3), f"Image shape is not (256, 256, 3): {filename}"
-
-    #             fire_pixels = np.sum(img[:, :, 0])  # No need to divide by 255 since we are using mpimg.imread()
-    #             total_water_pixels += fire_pixels
-    #             total_background_pixels += 65536 - water_pixels  # 256 * 256 = 65536
-
-    #             if water_pixels > 0:
-    #                 total_water_tiles += 1
-    #             else:
-    #                 total_background_tiles += 1
-
-    #         except AssertionError as e:
-    #             print(e)
-    #         except Exception as e:
-    #             print(f"An error occurred while processing {filename}: {e}")
-
-    #     print("Total water pixels:", total_water_pixels)
-    #     print("Total background pixels:", total_background_pixels)
-    #     print("Total water tiles:", total_water_tiles)
-    #     print("Total background tiles:", total_background_tiles)
-    #     return total_water_pixels, total_background_pixels, total_water_tiles, total_background_tiles
